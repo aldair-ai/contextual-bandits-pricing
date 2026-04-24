@@ -3,32 +3,28 @@ import numpy as np
 from src.cbp.data.base_dataset import MovieLensDataset
 from src.cbp.envs.bandit_env import BanditEnv
 from src.cbp.policies.epsilon_greedy import EpsilonGreedy
+from src.cbp.policies.linear_thompson import LinearThompsonSampling
 
 
-def run_single_policy(X, actions, rewards, epsilon=0.1, max_steps=1000):
-    # map actions → indices
+def run_single_policy(X, actions, rewards, policy, max_steps=1000):
     unique_actions = np.unique(actions)
-    action_to_idx = {a: i for i, a in enumerate(unique_actions)}
     idx_to_action = {i: a for i, a in enumerate(unique_actions)}
 
-    # init env + policy
     env = BanditEnv(X, actions, rewards, mode="full")
-    policy = EpsilonGreedy(n_actions=len(unique_actions), epsilon=epsilon)
-
     env.reset()
 
     total_reward = 0
     rewards_history = []
 
-    for t in range(max_steps):
+    for _ in range(max_steps):
         context = env.get_context()
 
-        action_idx = policy.select_action()
+        action_idx = policy.select_action(context)
         action = idx_to_action[action_idx]
 
         reward, done, _ = env.step(action)
 
-        policy.update(action_idx, reward)
+        policy.update(context, action_idx, reward)
 
         total_reward += reward
         rewards_history.append(reward)
@@ -39,13 +35,50 @@ def run_single_policy(X, actions, rewards, epsilon=0.1, max_steps=1000):
     return total_reward, rewards_history
 
 
-# -------------------------
-# Smoke test / minimal run
-# -------------------------
+def run_experiments(X, actions, rewards, max_steps=1000):
+    unique_actions = np.unique(actions)
+
+    n_actions = len(unique_actions)
+    n_features = X.shape[1]
+
+    policies = {
+        "EpsilonGreedy": EpsilonGreedy(
+            n_actions=n_actions,
+            epsilon=0.1,
+            seed=42,
+        ),
+        "LinearThompsonSampling": LinearThompsonSampling(
+            n_actions=n_actions,
+            n_features=n_features,
+            lambda_reg=1.0,
+            sigma=0.1,
+            seed=42,
+        ),
+    }
+
+    results = {}
+
+    for policy_name, policy in policies.items():
+        total_reward, rewards_history = run_single_policy(
+            X=X,
+            actions=actions,
+            rewards=rewards,
+            policy=policy,
+            max_steps=max_steps,
+        )
+
+        results[policy_name] = {
+            "total_reward": total_reward,
+            "avg_reward": float(np.mean(rewards_history)),
+            "rewards_history": rewards_history,
+        }
+
+    return results
+
+
 if __name__ == "__main__":
     print("Running minimal experiment...")
 
-    # load dataset
     ds = MovieLensDataset(data_dir="data/raw/ml-100k")
     data = ds.load_bandit_data()
 
@@ -53,19 +86,23 @@ if __name__ == "__main__":
     actions = data["actions"]
     rewards = data["rewards"]
 
-    # run single policy
-    total_reward, rewards_history = run_single_policy(
-        X,
-        actions,
-        rewards,
-        epsilon=0.1,
+    results = run_experiments(
+        X=X,
+        actions=actions,
+        rewards=rewards,
         max_steps=1000,
     )
 
-    # basic checks
-    assert len(rewards_history) > 0
-    assert all(r in [0, 1] for r in rewards_history)
+    for policy_name, metrics in results.items():
+        rewards_history = metrics["rewards_history"]
 
-    print(f"Total reward: {total_reward}")
-    print(f"Avg reward: {np.mean(rewards_history):.4f}")
-    print("Run successful.")
+        assert len(rewards_history) > 0
+        assert all(r in [0, 1] for r in rewards_history)
+
+        print("\n" + "=" * 40)
+        print(policy_name)
+        print("=" * 40)
+        print(f"Total reward: {metrics['total_reward']}")
+        print(f"Avg reward: {metrics['avg_reward']:.4f}")
+
+    print("\nRun successful.")
